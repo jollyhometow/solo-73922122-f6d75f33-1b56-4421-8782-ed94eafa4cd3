@@ -32,12 +32,18 @@ services:
       DB_NAME: platform
       DB_USER: api_user
       DB_PASSWORD: api_secret_pw
-      # 密钥 -> 课题 映射（无账号体系；新增课题/密钥只需改这里后重启）
+      # 课题密钥 -> 课题 映射（无账号体系；新增课题/密钥只需改这里后重启）
       API_KEYS_JSON: '{"key-p1-demo-001":"P1","key-p2-demo-002":"P2"}'
+      # 管理员密钥：仅可调用 /admin/* 撤回接口，与课题密钥物理分离
+      ADMIN_API_KEY: "admin-key-demo-900"
       API_POOL_MAX: "2"
       API_POOL_MIN: "1"
       API_MAX_ROWS: "200"
       API_STATEMENT_TIMEOUT_MS: "10000"
+      # 演示钩子：允许 /docs 通过请求头注入可控延迟，演示慢查询/慢响应期间撤回。
+      # 生产环境置 0 关闭（关闭后请求头被忽略）。
+      API_DEMO_HOOKS_ENABLED: "1"
+      API_DEMO_DELAY_MAX_MS: "8000"
     ports:
       - "8000:8000"
 

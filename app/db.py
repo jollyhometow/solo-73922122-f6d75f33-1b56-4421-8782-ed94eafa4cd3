@@ -78,6 +78,51 @@ class ProjectSession:
                 conn.close()
 
 
+class AdminSession:
+    """管理员撤回受理会话：读写事务，降权为 admin_role。
+
+    与 ProjectSession 借用同一个固定连接池——撤回受理与查询共用上限 2 的
+    物理连接集合，不另开连接、不破坏"单进程最多两条数据库连接"。
+    事务提交/回滚由调用方显式控制（撤回标记与授权删除必须原子提交）。
+    """
+
+    def __init__(self, conn: PgConnection):
+        self._conn = conn
+
+    @property
+    def conn(self) -> PgConnection:
+        return self._conn
+
+    def __enter__(self) -> "AdminSession":
+        conn = self._conn
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            # READ WRITE：需要删除授权与写入撤回登记；REPEATABLE READ 保证
+            # 本事务内"读授权-删授权-写标记"看到一致快照
+            cur.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
+            cur.execute("SET LOCAL ROLE admin_role")
+            cur.execute("SET LOCAL search_path = app, pg_temp")
+        return self
+
+    def commit(self) -> None:
+        with self._conn.cursor() as cur:
+            cur.execute("COMMIT")
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        conn = self._conn
+        try:
+            # 未显式 commit（含异常路径）一律回滚：失败全不改
+            if exc_type is not None:
+                with contextlib.suppress(psycopg2.Error):
+                    with conn.cursor() as cur:
+                        cur.execute("ROLLBACK")
+            with conn.cursor() as cur:
+                cur.execute("DISCARD ALL")
+        except psycopg2.Error:
+            with contextlib.suppress(Exception):
+                conn.close()
+
+
 class _FixedConnectionPool:
     """物理连接数恒定的线程安全连接池。
 
@@ -155,6 +200,17 @@ class Database:
                 yield session
         finally:
             # 必然归还；坏连接由池原地替换，不影响上限
+            self._pool.release(conn)
+
+    @contextlib.contextmanager
+    def admin_session(self) -> Iterator[AdminSession]:
+        """管理员读写会话（撤回受理原子事务用），同样受固定池上限约束。"""
+        conn = self._pool.acquire()
+        try:
+            session = AdminSession(conn)
+            with session:
+                yield session
+        finally:
             self._pool.release(conn)
 
     def close(self) -> None:
